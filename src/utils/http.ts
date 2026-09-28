@@ -14,6 +14,22 @@ export const parseJsonBody = async (
   }
 };
 
+/** The body is untrusted server data, so this validates its shape rather
+ *  than casting it -- PartnerApiError's "never carries a secret" guarantee
+ *  holds only because arbitrary server data is refused here, not passed
+ *  through. */
+const isStringArrayRecord = (
+  value: unknown,
+): value is Record<string, string[]> =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.values(value).every(
+    messages =>
+      Array.isArray(messages) &&
+      messages.every(message => typeof message === 'string'),
+  );
+
 /** Never echoes the request's own headers or body, so the thrown error is
  *  always safe for a caller to log. */
 export const errorFromResponse = async (
@@ -37,7 +53,16 @@ export const errorFromResponse = async (
       : typeof record.message === 'string'
         ? record.message
         : `${context} was rejected with status ${response.status}.`;
-  return new PartnerApiError(description, 'http', response.status, code);
+  const details = isStringArrayRecord(record.error_details)
+    ? record.error_details
+    : undefined;
+  return new PartnerApiError(
+    description,
+    'http',
+    response.status,
+    code,
+    details,
+  );
 };
 
 export const basicAuthHeader = (
