@@ -5,10 +5,8 @@ plan for a case and upload its documents.
 
 ## Read this first
 
-Everything below -- creating a plan and uploading a document -- is built and callable
-against a VITA sandbox today. What is **not** yet built: any partner-visible way to find
-out when VITA has finished attaching an uploaded document to its plan. See "What is still
-open" at the end.
+Everything below -- creating a plan, uploading a document and polling its outcome -- is
+built and callable against a VITA sandbox today.
 
 ## Vocabulary
 
@@ -36,8 +34,9 @@ All of this runs server side. `clientSecret` must never reach a browser.
 ```
 0. Connect            client credentials      ->  actor token, cached for you (~1 hour)
 1. Create the plan    partnerUserRef, plan     ->  plan exists
-2. Upload a document   partnerUserRef, file     ->  bytes land in VITA's storage
+2. Upload a document   partnerUserRef, file     ->  bytes land in VITA's storage, uploadId
 3. Attach              VITA's own background worker attaches the bytes to the plan
+4. Poll status         partnerUserRef, uploadId ->  PENDING/PROCESSING/COMPLETED/FAILED/EXPIRED
 ```
 
 `createPlan` and `uploadDocument` each mint and exchange tokens for you internally, as
@@ -110,7 +109,7 @@ const upload = await vita.uploadDocument(
   },
   bytes,
 );
-// { url, headers, expiresAt }
+// { uploadId, url, headers, expiresAt }
 ```
 
 One call: it requests permission to attach the document, then PUTs `bytes` straight to
@@ -146,10 +145,28 @@ refuse the attach -- most commonly on the document-count limit, which is enforce
 at this point because a burst of concurrent uploads can each pass the request-time
 check.
 
-There is currently **no partner-visible way to find out the outcome** of that
-asynchronous attach -- no status field, no polling endpoint, no callback. If you need to
-confirm a document landed, that currently means checking inside VITA itself. This is the
-main gap between what's built and a complete integration; see "What is still open".
+## Step 4: poll for the outcome
+
+```ts
+const status = await vita.getDocumentUploadStatus(
+  coordinator.vitaUserRef,
+  upload.uploadId,
+);
+// { uploadId, status, error }
+```
+
+| `status`     | Terminal? | Meaning                                                       |
+| ------------ | --------- | ------------------------------------------------------------- |
+| `PENDING`    | No        | Bytes not yet received, or received but not yet processed     |
+| `PROCESSING` | No        | Received; being attached to the plan                          |
+| `COMPLETED`  | Yes       | Attached                                                      |
+| `FAILED`     | Yes       | Refused; `error.code` names why                               |
+| `EXPIRED`    | Yes       | Nothing arrived within the grant window (plus a grace period) |
+
+Poll on an interval rather than once -- there is no callback. `uploadId` is only ever
+valid for the upload it was issued for: re-requesting the same filename claim (a retry
+after `FAILED` or `EXPIRED`, say) issues a new `uploadId`, and the old one then reads
+`invalid_target` rather than the newer upload's status.
 
 ---
 
@@ -217,18 +234,20 @@ try {
 }
 ```
 
-| Call                     | Status | `code`                 | Meaning                                               |
-| ------------------------ | ------ | ---------------------- | ----------------------------------------------------- |
-| `createPlan`             | `400`  | `invalid_target`       | The assignee isn't mapped. Provisioning, not a retry. |
-| `createPlan`             | `400`  | `invalid_request`      | A field is wrong; `err.details` names which.          |
-| `createPlan`             | `403`  | `assignment_forbidden` | The acting user may not assign to others.             |
-| `createPlan`             | `409`  | `plan_exists`          | This `planId` already has a plan. Safe outcome.       |
-| `uploadDocument` request | `400`  | `invalid_request`      | `filename`, `contentType` or `contentLength` refused. |
-| `uploadDocument` request | `409`  | `document_exists`      | That filename is already claimed on the plan.         |
-| `uploadDocument` request | `409`  | `plan_not_open`        | The plan no longer accepts documents.                 |
-| `uploadDocument` request | `409`  | `source_limit_reached` | The plan already holds 20 documents.                  |
-| `uploadDocument` request | `409`  | `upload_in_progress`   | Lost a race with a concurrent identical request.      |
-| Any call                 | `401`  | -                      | Retried once internally with a fresh token.           |
+| Call                      | Status | `code`                 | Meaning                                               |
+| ------------------------- | ------ | ---------------------- | ----------------------------------------------------- |
+| `createPlan`              | `400`  | `invalid_target`       | The assignee isn't mapped. Provisioning, not a retry. |
+| `createPlan`              | `400`  | `invalid_request`      | A field is wrong; `err.details` names which.          |
+| `createPlan`              | `403`  | `assignment_forbidden` | The acting user may not assign to others.             |
+| `createPlan`              | `409`  | `plan_exists`          | This `planId` already has a plan. Safe outcome.       |
+| `uploadDocument` request  | `400`  | `invalid_request`      | `filename`, `contentType` or `contentLength` refused. |
+| `uploadDocument` request  | `403`  | `upload_forbidden`     | Not an admin, and the plan is assigned to another.    |
+| `uploadDocument` request  | `409`  | `document_exists`      | That filename is already claimed on the plan.         |
+| `uploadDocument` request  | `409`  | `plan_not_open`        | The plan no longer accepts documents.                 |
+| `uploadDocument` request  | `409`  | `source_limit_reached` | The plan already holds 20 documents.                  |
+| `uploadDocument` request  | `409`  | `upload_in_progress`   | Lost a race with a concurrent identical request.      |
+| `getDocumentUploadStatus` | `400`  | `invalid_target`       | Unrecognised, superseded, or not yours. Not a retry.  |
+| Any call                  | `401`  | -                      | Retried once internally with a fresh token.           |
 
 `upload_in_progress` is the only one of these worth retrying automatically -- it's a
 lost race, not a policy decision, and asking again supersedes the previous grant. Every
@@ -249,9 +268,6 @@ Worth building around, because these are decisions rather than implementation de
 
 ## What is still open
 
-- **A partner-visible way to confirm a document attached** -- no status field, polling
-  endpoint or callback exists yet. This is the one gap between what's documented here
-  and a complete integration.
 - Whether a checksum is required with an upload request, and which algorithm.
 - Whether the client ships as a published npm package, or stays a mirrored source
   directory for vendoring.

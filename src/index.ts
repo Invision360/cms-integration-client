@@ -3,6 +3,7 @@ export type {
   CreatedPlan,
   CreatePlanRequest,
   DelegatedToken,
+  DocumentUploadStatusResult,
   Identity,
   Me,
   PartnerApiClientConfig,

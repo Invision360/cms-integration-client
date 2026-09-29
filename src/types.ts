@@ -97,6 +97,7 @@ export interface RequestDocumentUploadRequest {
 
 export const requestDocumentUploadResponseSchema = z.object({
   upload: z.object({
+    uploadId: z.string(),
     url: z.string(),
     headers: z.record(z.string(), z.string()),
     expiresAt: z.string(),
@@ -105,4 +106,18 @@ export const requestDocumentUploadResponseSchema = z.object({
 
 export type RequestedDocumentUpload = z.infer<
   typeof requestDocumentUploadResponseSchema
+>['upload'];
+
+/** PENDING, PROCESSING and EXPIRED are all still yours to poll; COMPLETED
+ *  and FAILED are terminal, same as VITA's own DocumentUploadStatus. */
+export const documentUploadStatusResponseSchema = z.object({
+  upload: z.object({
+    uploadId: z.string(),
+    status: z.enum(['PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'EXPIRED']),
+    error: z.object({ code: z.string(), description: z.string() }).nullable(),
+  }),
+});
+
+export type DocumentUploadStatusResult = z.infer<
+  typeof documentUploadStatusResponseSchema
 >['upload'];

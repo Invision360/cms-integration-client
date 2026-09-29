@@ -3,12 +3,14 @@ import { PartnerApiError } from './errors';
 import {
   createdPlanResponseSchema,
   delegatedTokenResponseSchema,
+  documentUploadStatusResponseSchema,
   identityResponseSchema,
   meResponseSchema,
   requestDocumentUploadResponseSchema,
   type CreatedPlan,
   type CreatePlanRequest,
   type DelegatedToken,
+  type DocumentUploadStatusResult,
   type Identity,
   type Me,
   type PartnerApiClientConfig,
@@ -170,6 +172,33 @@ export class PartnerApiClient {
     return parsed.data.upload;
   }
 
+  /** Polls the outcome of one upload by the id `requestDocumentUpload`
+   *  returned. Retries once on a 401 with a fresh delegated token, for the
+   *  same reason every other delegated call does. A 400 (unrecognised or
+   *  not yours) is never retried: asking again with the same id gets the
+   *  same answer. */
+  async getDocumentUploadStatus(
+    partnerUserRef: string,
+    uploadId: string,
+  ): Promise<DocumentUploadStatusResult> {
+    const response = await this.callAsDelegate(partnerUserRef, token =>
+      this.fetchDocumentUploadStatus(token, uploadId),
+    );
+    if (!response.ok) {
+      throw await errorFromResponse(response, 'Get document upload status');
+    }
+
+    const body = await parseJsonBody(response, 'Get document upload status');
+    const parsed = documentUploadStatusResponseSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new PartnerApiError(
+        'Document upload status response was missing required fields.',
+        'malformed-response',
+      );
+    }
+    return parsed.data.upload;
+  }
+
   /** Requests permission to attach a document, then immediately PUTs `body`
    *  to the granted URL with the headers VITA returned -- they already carry
    *  everything the upload needs (content type, grant id), so nothing here
@@ -299,6 +328,22 @@ export class PartnerApiClient {
       );
     } catch {
       throw new PartnerApiError('Request document upload failed.', 'network');
+    }
+  }
+
+  private async fetchDocumentUploadStatus(
+    delegatedToken: string,
+    uploadId: string,
+  ): Promise<Response> {
+    try {
+      return await this.fetchImpl(`${this.config.apiUrl}/uploads/${uploadId}`, {
+        headers: { Authorization: `Bearer ${delegatedToken}` },
+      });
+    } catch {
+      throw new PartnerApiError(
+        'Get document upload status failed.',
+        'network',
+      );
     }
   }
 }
