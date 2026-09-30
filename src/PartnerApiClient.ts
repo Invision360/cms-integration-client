@@ -175,8 +175,10 @@ export class PartnerApiClient {
   /** Polls the outcome of one upload by the id `requestDocumentUpload`
    *  returned. Retries once on a 401 with a fresh delegated token, for the
    *  same reason every other delegated call does. A 400 (unrecognised or
-   *  not yours) is never retried: asking again with the same id gets the
-   *  same answer. */
+   *  not yours) is usually not worth retrying: asking again with the same
+   *  id gets the same answer. The exception is a freshly issued or
+   *  re-issued id, which can read 400 for the first poll or two until the
+   *  lookup catches up. The next poll on your usual interval resolves it. */
   async getDocumentUploadStatus(
     partnerUserRef: string,
     uploadId: string,

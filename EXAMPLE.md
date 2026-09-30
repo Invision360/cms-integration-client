@@ -149,7 +149,7 @@ check.
 
 ```ts
 const status = await vita.getDocumentUploadStatus(
-  coordinator.vitaUserRef,
+  coordinator.partnerUserRef,
   upload.uploadId,
 );
 // { uploadId, status, error }
@@ -167,6 +167,11 @@ Poll on an interval rather than once -- there is no callback. `uploadId` is only
 valid for the upload it was issued for: re-requesting the same filename claim (a retry
 after `FAILED` or `EXPIRED`, say) issues a new `uploadId`, and the old one then reads
 `invalid_target` rather than the newer upload's status.
+
+A freshly issued or re-issued `uploadId` can also briefly read `invalid_target` on the
+first poll or two. The lookup crosses a GSI, and a read straight after the write can be
+stale. Poll again and it resolves. A superseded or unrecognised id is different: it reads
+`invalid_target` no matter how long you wait.
 
 ---
 
@@ -234,24 +239,25 @@ try {
 }
 ```
 
-| Call                      | Status | `code`                 | Meaning                                               |
-| ------------------------- | ------ | ---------------------- | ----------------------------------------------------- |
-| `createPlan`              | `400`  | `invalid_target`       | The assignee isn't mapped. Provisioning, not a retry. |
-| `createPlan`              | `400`  | `invalid_request`      | A field is wrong; `err.details` names which.          |
-| `createPlan`              | `403`  | `assignment_forbidden` | The acting user may not assign to others.             |
-| `createPlan`              | `409`  | `plan_exists`          | This `planId` already has a plan. Safe outcome.       |
-| `uploadDocument` request  | `400`  | `invalid_request`      | `filename`, `contentType` or `contentLength` refused. |
-| `uploadDocument` request  | `403`  | `upload_forbidden`     | Not an admin, and the plan is assigned to another.    |
-| `uploadDocument` request  | `409`  | `document_exists`      | That filename is already claimed on the plan.         |
-| `uploadDocument` request  | `409`  | `plan_not_open`        | The plan no longer accepts documents.                 |
-| `uploadDocument` request  | `409`  | `source_limit_reached` | The plan already holds 20 documents.                  |
-| `uploadDocument` request  | `409`  | `upload_in_progress`   | Lost a race with a concurrent identical request.      |
-| `getDocumentUploadStatus` | `400`  | `invalid_target`       | Unrecognised, superseded, or not yours. Not a retry.  |
-| Any call                  | `401`  | -                      | Retried once internally with a fresh token.           |
+| Call                      | Status | `code`                 | Meaning                                                                                       |
+| ------------------------- | ------ | ---------------------- | --------------------------------------------------------------------------------------------- |
+| `createPlan`              | `400`  | `invalid_target`       | The assignee isn't mapped. Provisioning, not a retry.                                         |
+| `createPlan`              | `400`  | `invalid_request`      | A field is wrong; `err.details` names which.                                                  |
+| `createPlan`              | `403`  | `assignment_forbidden` | The acting user may not assign to others.                                                     |
+| `createPlan`              | `409`  | `plan_exists`          | This `planId` already has a plan. Safe outcome.                                               |
+| `uploadDocument` request  | `400`  | `invalid_request`      | `filename`, `contentType` or `contentLength` refused.                                         |
+| `uploadDocument` request  | `403`  | `upload_forbidden`     | Not an admin, and the plan is assigned to another.                                            |
+| `uploadDocument` request  | `409`  | `document_exists`      | That filename is already claimed on the plan.                                                 |
+| `uploadDocument` request  | `409`  | `plan_not_open`        | The plan no longer accepts documents.                                                         |
+| `uploadDocument` request  | `409`  | `source_limit_reached` | The plan already holds 20 documents.                                                          |
+| `uploadDocument` request  | `409`  | `upload_in_progress`   | Lost a race with a concurrent identical request.                                              |
+| `getDocumentUploadStatus` | `400`  | `invalid_target`       | Unrecognised, superseded, or not yours. Not a retry -- except a freshly issued id, see above. |
+| Any call                  | `401`  | -                      | Retried once internally with a fresh token.                                                   |
 
 `upload_in_progress` is the only one of these worth retrying automatically -- it's a
-lost race, not a policy decision, and asking again supersedes the previous grant. Every
-other refusal needs something changed first, not a retry.
+lost race, not a policy decision, and asking again supersedes the previous grant. The
+other exception is a stale `invalid_target` on a fresh `uploadId`, which your next poll
+clears. Every other refusal needs something changed first, not a retry.
 
 ## What will not change
 
