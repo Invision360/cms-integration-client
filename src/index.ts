@@ -7,6 +7,7 @@ export type {
   Identity,
   Me,
   PartnerApiClientConfig,
+  PlanStatusResult,
 } from './types';
 export { PartnerApiError } from './errors';
 export type { PartnerApiErrorKind } from './errors';

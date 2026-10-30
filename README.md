@@ -110,6 +110,25 @@ If you'd rather perform the PUT yourself (streaming from disk, a different HTTP 
 `requestDocumentUpload` directly for just the grant -- `uploadDocument` is a convenience wrapper
 around it, not the only way to upload.
 
+## Reading a plan's status
+
+```ts
+const plan = await client.getPlanStatus('user-ref-48213', '5512_7');
+// { id, status, updatedAt, message }
+```
+
+| `status`          | Accepts uploads | Can be imported |
+| ----------------- | --------------- | --------------- |
+| `open`            | Yes             | No              |
+| `generating`      | No              | No              |
+| `in_progress`     | No              | Yes             |
+| `ready_to_import` | No              | Yes             |
+| `failed`          | No              | No              |
+
+Only `open` accepts uploads. `in_progress` and `ready_to_import` can be imported. `id` is your own
+plan reference. An unknown reference is a `404` with code `not_found`, and a plan assigned to
+another user is a `403` with code `plan_forbidden`.
+
 ## Handling errors
 
 Every failure is a `PartnerApiError` with a `kind`, safe to log since its message never echoes

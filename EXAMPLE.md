@@ -173,6 +173,24 @@ first poll or two. The lookup crosses a GSI, and a read straight after the write
 stale. Poll again and it resolves. A superseded or unrecognised id is different: it reads
 `invalid_target` no matter how long you wait.
 
+## Reading the plan's status
+
+```ts
+const plan = await vita.getPlanStatus(coordinator.partnerUserRef, planId);
+// { id, status, updatedAt, message }
+```
+
+| `status`          | Accepts uploads | Can be imported |
+| ----------------- | --------------- | --------------- |
+| `open`            | Yes             | No              |
+| `generating`      | No              | No              |
+| `in_progress`     | No              | Yes             |
+| `ready_to_import` | No              | Yes             |
+| `failed`          | No              | No              |
+
+Only `open` accepts uploads. `in_progress` and `ready_to_import` can be imported. `id` is your own
+`planId`. Poll on an interval, as there is no callback.
+
 ---
 
 ## Putting it together
@@ -252,6 +270,8 @@ try {
 | `uploadDocument` request  | `409`  | `source_limit_reached` | The plan already holds 20 documents.                                                          |
 | `uploadDocument` request  | `409`  | `upload_in_progress`   | Lost a race with a concurrent identical request.                                              |
 | `getDocumentUploadStatus` | `400`  | `invalid_target`       | Unrecognised, superseded, or not yours. Not a retry -- except a freshly issued id, see above. |
+| `getPlanStatus`           | `404`  | `not_found`            | No plan exists for this reference.                                                            |
+| `getPlanStatus`           | `403`  | `plan_forbidden`       | The plan is assigned to another user, and the acting user is not an admin.                    |
 | Any call                  | `401`  | -                      | Retried once internally with a fresh token.                                                   |
 
 `upload_in_progress` is the only one of these worth retrying automatically -- it's a

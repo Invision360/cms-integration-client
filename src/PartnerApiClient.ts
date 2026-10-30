@@ -6,6 +6,7 @@ import {
   documentUploadStatusResponseSchema,
   identityResponseSchema,
   meResponseSchema,
+  planStatusResponseSchema,
   requestDocumentUploadResponseSchema,
   type CreatedPlan,
   type CreatePlanRequest,
@@ -14,6 +15,7 @@ import {
   type Identity,
   type Me,
   type PartnerApiClientConfig,
+  type PlanStatusResult,
   type RequestDocumentUploadRequest,
   type RequestedDocumentUpload,
 } from './types';
@@ -201,6 +203,35 @@ export class PartnerApiClient {
     return parsed.data.upload;
   }
 
+  /** Reads the status of a plan you created, by your own `planReferenceId`.
+   *  Only `open` accepts documents. `in_progress` and `ready_to_import` can
+   *  be imported. Retries once on a 401 with a fresh delegated token, for the
+   *  same reason every other delegated call does. A 404 `not_found` means no
+   *  plan exists for the reference. A 403 `plan_forbidden` means the plan is
+   *  assigned to another user. Neither is worth retrying. Poll on an interval
+   *  rather than once, as there is no callback. */
+  async getPlanStatus(
+    partnerUserRef: string,
+    planReferenceId: string,
+  ): Promise<PlanStatusResult> {
+    const response = await this.callAsDelegate(partnerUserRef, token =>
+      this.fetchPlanStatus(token, planReferenceId),
+    );
+    if (!response.ok) {
+      throw await errorFromResponse(response, 'Get plan status');
+    }
+
+    const body = await parseJsonBody(response, 'Get plan status');
+    const parsed = planStatusResponseSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new PartnerApiError(
+        'Plan status response was missing required fields.',
+        'malformed-response',
+      );
+    }
+    return parsed.data.plan;
+  }
+
   /** Requests permission to attach a document, then immediately PUTs `body`
    *  to the granted URL with the headers VITA returned -- they already carry
    *  everything the upload needs (content type, grant id), so nothing here
@@ -318,7 +349,7 @@ export class PartnerApiClient {
   ): Promise<Response> {
     try {
       return await this.fetchImpl(
-        `${this.config.apiUrl}/plans/${planReferenceId}/documents`,
+        `${this.config.apiUrl}/plans/${encodeURIComponent(planReferenceId)}/documents`,
         {
           method: 'POST',
           headers: {
@@ -330,6 +361,20 @@ export class PartnerApiClient {
       );
     } catch {
       throw new PartnerApiError('Request document upload failed.', 'network');
+    }
+  }
+
+  private async fetchPlanStatus(
+    delegatedToken: string,
+    planReferenceId: string,
+  ): Promise<Response> {
+    try {
+      return await this.fetchImpl(
+        `${this.config.apiUrl}/plans/${encodeURIComponent(planReferenceId)}`,
+        { headers: { Authorization: `Bearer ${delegatedToken}` } },
+      );
+    } catch {
+      throw new PartnerApiError('Get plan status failed.', 'network');
     }
   }
 
