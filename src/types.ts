@@ -121,3 +121,22 @@ export const documentUploadStatusResponseSchema = z.object({
 export type DocumentUploadStatusResult = z.infer<
   typeof documentUploadStatusResponseSchema
 >['upload'];
+
+/** Only `open` accepts documents. `in_progress` and `ready_to_import` can be
+ *  imported. `generating` and `failed` can be neither. */
+export const planStatusResponseSchema = z.object({
+  plan: z.object({
+    id: z.string(),
+    status: z.enum([
+      'open',
+      'generating',
+      'in_progress',
+      'ready_to_import',
+      'failed',
+    ]),
+    updatedAt: z.string(),
+    message: z.string(),
+  }),
+});
+
+export type PlanStatusResult = z.infer<typeof planStatusResponseSchema>['plan'];
