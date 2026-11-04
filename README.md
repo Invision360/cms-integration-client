@@ -129,6 +129,148 @@ Only `open` accepts uploads. `in_progress` and `ready_to_import` can be imported
 plan reference. An unknown reference is a `404` with code `not_found`, and a plan assigned to
 another user is a `403` with code `plan_forbidden`.
 
+## Reading a plan's content
+
+```ts
+const plan = await client.getPlanContent('user-ref-48213', '5512_7');
+// { schemaVersion, plan, sources, details, historyAndViews, ... }
+```
+
+Call it once `getPlanStatus` reports `in_progress` or `ready_to_import`. Any other status is a `409`
+with code `plan_not_ready`. A `404` `not_found` and a `403` `plan_forbidden` are as for the status
+call. The result is typed as `PlanContent`, and the part types (`PlanContentEntry`,
+`PlanContentNarrative` and the rest) are exported too.
+
+- At `in_progress` the plan is a draft that can still change in VITA, and nothing tells you when it
+  does. Keep `plan.contentRevision`, and read again later to compare it.
+- A `null` text value means empty. `"Unknown"` is a real value that VITA holds, passed through.
+- `html` in a rich text value is a fragment of plain tags with no classes or styles. Style it
+  yourself. It is escaped HTML5 (`&amp;`, `&lt;`, `&quot;`, `&apos;`, `&nbsp;`). `text` is not
+  escaped.
+- A key the client does not know is dropped rather than failing the parse, because an additive
+  change does not bump `schemaVersion`. A breaking change does, so check it.
+
+### Type reference
+
+These are the exported types, simplified. `PlanContent` is the whole payload.
+
+```ts
+type Text = string | null; // null only when empty
+type RichText = { text: string; html: string };
+type Citation = { quote: string; documentName: string; page: number | null };
+type Entry = { content: RichText; citations: Citation[] };
+type Narrative = Entry | null;
+type Approval = { approvedAt: string; approvedBy: string | null } | null; // approver email
+
+type PlanContent = {
+  schemaVersion: number;
+  plan: {
+    reference: string; // your planId
+    status: 'in_progress' | 'ready_to_import';
+    contentRevision: number;
+    updatedAt: string;
+    approvedAt: string | null; // null unless every part is approved
+  };
+  sources: {
+    documentName: string; // what Citation.documentName refers to
+    originalFilename: string | null;
+    tags: string[];
+    createdAt: string | null;
+  }[];
+  details: {
+    approval: Approval;
+    childOrYoungPerson: Record<
+      | 'firstName'
+      | 'surname'
+      | 'otherNames'
+      | 'dateOfBirth'
+      | 'homeAddress'
+      | 'gender'
+      | 'preferredPronoun'
+      | 'religion'
+      | 'ethnicity'
+      | 'firstLanguage',
+      Text
+    >;
+    parentCarers: Record<
+      | 'firstName'
+      | 'surname'
+      | 'address'
+      | 'email'
+      | 'telephone'
+      | 'relationshipToChild'
+      | 'firstLanguage',
+      Text
+    >[]; // zero to two
+    identifiers: { upn: Text; nhsNumber: Text };
+    education: { setting: Text };
+    socialCare: {
+      knownToSocialCare: Text;
+      team: Text;
+      lookedAfter: Text;
+      careType: Text;
+    };
+  };
+  historyAndViews: {
+    approval: Approval;
+    history: Record<string, Narrative>; // home, health, education, ...
+    childOrYoungPersonViews: Record<string, Narrative>;
+    parentCarerViews: Record<string, Narrative>;
+  };
+  specialEducationalNeeds: {
+    approval: Approval;
+    summaryOfNeeds: Narrative;
+    communicationAndInteraction: EducationArea;
+    cognitionAndLearning: EducationArea;
+    socialEmotionalMentalHealth: EducationArea;
+    physicalSensory: EducationArea;
+  };
+  health: {
+    approval: Approval;
+    strengths: Entry[];
+    needsProvisionsOutcomes: Npo<Provision>;
+  };
+  socialCare: {
+    approval: Approval;
+    strengths: Entry[];
+    needsProvisionsOutcomes: Npo<Provision & { type: 'H1' | 'H2' }>;
+  };
+  adviceAndInformation: {
+    approval: Approval;
+    entries: Record<
+      | 'requested'
+      | 'documentName'
+      | 'documentDate'
+      | 'staffOrganisation'
+      | 'staffName'
+      | 'staffRole',
+      Text
+    >[];
+  };
+};
+
+type Provision = Entry & { frequency: Text; deliverer: Text };
+type Outcome = Entry & {
+  preparingForAdulthood: Text;
+  timeline: Text;
+  reviewDate: Text;
+};
+type Group<P> = {
+  needsAndProvisions: { needs: Entry[]; provisions: P[] }[];
+  outcomes: Outcome[];
+};
+type EducationArea = {
+  strengths: Entry[];
+  needProvisionOutcomeGroups: Group<Provision>[];
+};
+type Npo<P> =
+  | { kind: 'no_needs_identified'; statement: RichText }
+  | { kind: 'identified'; groups: Group<P>[] };
+```
+
+The `Record<string, Narrative>` fields have fixed keys. See `PlanContent` for them, or the example
+payload in EXAMPLE.md.
+
 ## Handling errors
 
 Every failure is a `PartnerApiError` with a `kind`, safe to log since its message never echoes
@@ -173,6 +315,7 @@ other statuses are worth telling apart:
 | `400`  | `invalid_request`      | The request itself is wrong -- a missing field, or a malformed date. `err.details` names which. |
 | `403`  | `assignment_forbidden` | The acting user may not assign to others.                                                       |
 | `403`  | -                      | Your deployment is not attached to an active authority.                                         |
+| `409`  | `plan_not_ready`       | `getPlanContent` on a plan that is not `in_progress` or `ready_to_import`.                      |
 | `409`  | `plan_exists`          | This `planId` already has a plan.                                                               |
 
 ## About this mirror

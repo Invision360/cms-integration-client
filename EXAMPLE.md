@@ -191,6 +191,88 @@ const plan = await vita.getPlanStatus(coordinator.partnerUserRef, planId);
 Only `open` accepts uploads. `in_progress` and `ready_to_import` can be imported. `id` is your own
 `planId`. Poll on an interval, as there is no callback.
 
+## Importing the plan
+
+Once the status is `in_progress` or `ready_to_import`, read the plan as JSON:
+
+```ts
+const content = await vita.getPlanContent(coordinator.partnerUserRef, planId);
+```
+
+An abridged payload:
+
+```json
+{
+  "schemaVersion": 0,
+  "plan": {
+    "reference": "5512_7",
+    "status": "in_progress",
+    "contentRevision": 4,
+    "updatedAt": "2026-09-10T09:00:00.000Z",
+    "approvedAt": null
+  },
+  "sources": [
+    {
+      "documentName": "ep-report",
+      "originalFilename": "EP report.docx",
+      "tags": [],
+      "createdAt": "2026-09-01T00:00:00.000Z"
+    }
+  ],
+  "details": {
+    "approval": {
+      "approvedAt": "2026-09-09T15:00:00.000Z",
+      "approvedBy": "caseworker@example.gov.uk"
+    },
+    "childOrYoungPerson": {
+      "firstName": "Alex",
+      "dateOfBirth": "Unknown",
+      "otherNames": null
+    },
+    "parentCarers": [
+      { "firstName": "Sam", "email": null, "firstLanguage": "Urdu" }
+    ]
+  },
+  "historyAndViews": {
+    "approval": null,
+    "history": {
+      "home": {
+        "content": {
+          "text": "Lives with mum.",
+          "html": "<p>Lives with mum.</p>"
+        },
+        "citations": [
+          {
+            "quote": "Alex lives with his mum",
+            "documentName": "ep-report",
+            "page": 3
+          }
+        ]
+      },
+      "health": null
+    }
+  },
+  "health": {
+    "approval": null,
+    "strengths": [],
+    "needsProvisionsOutcomes": {
+      "kind": "no_needs_identified",
+      "statement": {
+        "text": "None identified.",
+        "html": "<p>None identified.</p>"
+      }
+    }
+  }
+}
+```
+
+The real payload always has every key. This one leaves some out. Three things to build around:
+
+- At `in_progress` this is a draft. Store `plan.contentRevision`, and read again later to see if VITA
+  changed the plan since you imported it.
+- `null` is empty. `"Unknown"` is a value that VITA holds, passed through as written.
+- A citation's `documentName` is a key into `sources`.
+
 ---
 
 ## Putting it together
@@ -272,6 +354,9 @@ try {
 | `getDocumentUploadStatus` | `400`  | `invalid_target`       | Unrecognised, superseded, or not yours. Not a retry -- except a freshly issued id, see above. |
 | `getPlanStatus`           | `404`  | `not_found`            | No plan exists for this reference.                                                            |
 | `getPlanStatus`           | `403`  | `plan_forbidden`       | The plan is assigned to another user, and the acting user is not an admin.                    |
+| `getPlanContent`          | `404`  | `not_found`            | As for `getPlanStatus`.                                                                       |
+| `getPlanContent`          | `403`  | `plan_forbidden`       | As for `getPlanStatus`.                                                                       |
+| `getPlanContent`          | `409`  | `plan_not_ready`       | The plan is not yet `in_progress` or `ready_to_import`. Check the status first.               |
 | Any call                  | `401`  | -                      | Retried once internally with a fresh token.                                                   |
 
 `upload_in_progress` is the only one of these worth retrying automatically -- it's a
