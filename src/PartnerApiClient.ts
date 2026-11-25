@@ -1,46 +1,39 @@
 import { ActorTokenCache } from './ActorTokenCache';
-import { PartnerApiError } from './errors';
-import {
-  createdPlanResponseSchema,
-  delegatedTokenResponseSchema,
-  documentUploadStatusResponseSchema,
-  identityResponseSchema,
-  meResponseSchema,
-  planStatusResponseSchema,
-  requestDocumentUploadResponseSchema,
-  type CreatedPlan,
-  type CreatePlanRequest,
-  type DelegatedToken,
-  type DocumentUploadStatusResult,
-  type Identity,
-  type Me,
-  type PartnerApiClientConfig,
-  type PlanStatusResult,
-  type RequestDocumentUploadRequest,
-  type RequestedDocumentUpload,
+import * as routes from './routes';
+import type { RouteContext } from './routes';
+import type {
+  CreatedPlan,
+  CreatePlanRequest,
+  DelegatedToken,
+  DocumentUploadStatusResult,
+  Identity,
+  Me,
+  PartnerApiClientConfig,
+  PlanContent,
+  PlanStatusResult,
+  RequestDocumentUploadRequest,
+  RequestedDocumentUpload,
 } from './types';
-import { errorFromResponse, parseJsonBody } from './utils/http';
 
-/** Must match expected values from VITA */
-const TOKEN_EXCHANGE_GRANT_TYPE =
-  'urn:ietf:params:oauth:grant-type:token-exchange';
-const PARTNER_USER_REFERENCE_TOKEN_TYPE =
-  'urn:invision360:params:oauth:token-type:partner-user-reference';
-
+/** The public surface. Each method is one route in `routes/`, which holds
+ *  the request, retry and parsing; this class only owns the shared context. */
 export class PartnerApiClient {
-  private readonly fetchImpl: typeof fetch;
-  private readonly actorTokens: ActorTokenCache;
+  private readonly ctx: RouteContext;
 
-  constructor(private readonly config: PartnerApiClientConfig) {
-    this.fetchImpl = config.fetch ?? fetch;
-    this.actorTokens = new ActorTokenCache(config, this.fetchImpl);
+  constructor(config: PartnerApiClientConfig) {
+    const fetchImpl = config.fetch ?? fetch;
+    this.ctx = {
+      apiUrl: config.apiUrl,
+      fetch: fetchImpl,
+      actorTokens: new ActorTokenCache(config, fetchImpl),
+    };
   }
 
   /** Your deployment's own credential, minted and cached in memory. Refreshed
    *  automatically before expiry, with one in-flight request shared across
    *  concurrent callers. */
   getActorToken(): Promise<string> {
-    return this.actorTokens.get();
+    return this.ctx.actorTokens.get();
   }
 
   /** Exchanges `partnerUserRef` for a short-lived token scoped to that user,
@@ -48,75 +41,19 @@ export class PartnerApiClient {
    *  fresh actor token on a 401. Every other failure (400, 403, network,
    *  malformed response) is surfaced as-is -- retrying those would not
    *  change the outcome. */
-  async getDelegatedToken(partnerUserRef: string): Promise<DelegatedToken> {
-    const actorToken = await this.getActorToken();
-    let response = await this.exchange(actorToken, partnerUserRef);
-    if (response.status === 401) {
-      this.actorTokens.invalidate();
-      response = await this.exchange(
-        await this.getActorToken(),
-        partnerUserRef,
-      );
-    }
-    if (!response.ok) {
-      throw await errorFromResponse(response, 'Delegated token exchange');
-    }
-
-    const body = await parseJsonBody(response, 'Delegated token exchange');
-    const parsed = delegatedTokenResponseSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new PartnerApiError(
-        'Delegated token exchange response was missing required fields.',
-        'malformed-response',
-      );
-    }
-    return parsed.data;
+  getDelegatedToken(partnerUserRef: string): Promise<DelegatedToken> {
+    return routes.getDelegatedToken(this.ctx, partnerUserRef);
   }
 
-  async getIdentity(accessToken: string): Promise<Identity> {
-    let response: Response;
-    try {
-      response = await this.fetchImpl(`${this.config.apiUrl}/identity`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-    } catch {
-      throw new PartnerApiError('Identity request failed.', 'network');
-    }
-    if (!response.ok) {
-      throw await errorFromResponse(response, 'Identity request');
-    }
-
-    const body = await parseJsonBody(response, 'Identity request');
-    const parsed = identityResponseSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new PartnerApiError(
-        'Identity response was missing required fields.',
-        'malformed-response',
-      );
-    }
-    return parsed.data;
+  getIdentity(accessToken: string): Promise<Identity> {
+    return routes.getIdentity(this.ctx, accessToken);
   }
 
   /** Mints the delegated token for you. Retries once on a 401 with a fresh
    *  delegated token, since one lives 15 minutes. Roles are read live on
    *  every call, unlike a delegated token's own role claim. */
-  async getMe(partnerUserRef: string): Promise<Me> {
-    const response = await this.callAsDelegate(partnerUserRef, token =>
-      this.fetchMe(token),
-    );
-    if (!response.ok) {
-      throw await errorFromResponse(response, 'Me request');
-    }
-
-    const body = await parseJsonBody(response, 'Me request');
-    const parsed = meResponseSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new PartnerApiError(
-        'Me response was missing required fields.',
-        'malformed-response',
-      );
-    }
-    return parsed.data;
+  getMe(partnerUserRef: string): Promise<Me> {
+    return routes.getMe(this.ctx, partnerUserRef);
   }
 
   /** Both tokens are minted here so a caller never handles them. Retries once
@@ -124,26 +61,11 @@ export class PartnerApiClient {
    *  minutes and may expire between being minted and being used. Only a 401
    *  is retried: it means the request was rejected before any plan was
    *  created, so the retry cannot duplicate one. */
-  async createPlan(
+  createPlan(
     partnerUserRef: string,
     plan: CreatePlanRequest,
   ): Promise<CreatedPlan> {
-    const response = await this.callAsDelegate(partnerUserRef, token =>
-      this.postPlan(token, plan),
-    );
-    if (!response.ok) {
-      throw await errorFromResponse(response, 'Create plan request');
-    }
-
-    const body = await parseJsonBody(response, 'Create plan request');
-    const parsed = createdPlanResponseSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new PartnerApiError(
-        'Create plan response was missing required fields.',
-        'malformed-response',
-      );
-    }
-    return parsed.data.plan;
+    return routes.createPlan(this.ctx, partnerUserRef, plan);
   }
 
   /** Both tokens are minted here so a caller never handles them. Retries once
@@ -151,27 +73,17 @@ export class PartnerApiClient {
    *  does -- a 401 means the request was rejected before a grant was issued,
    *  so the retry cannot duplicate one. A 409 is never retried: the caller
    *  decides whether to ask again. */
-  async requestDocumentUpload(
+  requestDocumentUpload(
     partnerUserRef: string,
     planReferenceId: string,
     request: RequestDocumentUploadRequest,
   ): Promise<RequestedDocumentUpload> {
-    const response = await this.callAsDelegate(partnerUserRef, token =>
-      this.postDocumentUploadRequest(token, planReferenceId, request),
+    return routes.requestDocumentUpload(
+      this.ctx,
+      partnerUserRef,
+      planReferenceId,
+      request,
     );
-    if (!response.ok) {
-      throw await errorFromResponse(response, 'Request document upload');
-    }
-
-    const body = await parseJsonBody(response, 'Request document upload');
-    const parsed = requestDocumentUploadResponseSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new PartnerApiError(
-        'Request document upload response was missing required fields.',
-        'malformed-response',
-      );
-    }
-    return parsed.data.upload;
   }
 
   /** Polls the outcome of one upload by the id `requestDocumentUpload`
@@ -181,26 +93,11 @@ export class PartnerApiClient {
    *  id gets the same answer. The exception is a freshly issued or
    *  re-issued id, which can read 400 for the first poll or two until the
    *  lookup catches up. The next poll on your usual interval resolves it. */
-  async getDocumentUploadStatus(
+  getDocumentUploadStatus(
     partnerUserRef: string,
     uploadId: string,
   ): Promise<DocumentUploadStatusResult> {
-    const response = await this.callAsDelegate(partnerUserRef, token =>
-      this.fetchDocumentUploadStatus(token, uploadId),
-    );
-    if (!response.ok) {
-      throw await errorFromResponse(response, 'Get document upload status');
-    }
-
-    const body = await parseJsonBody(response, 'Get document upload status');
-    const parsed = documentUploadStatusResponseSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new PartnerApiError(
-        'Document upload status response was missing required fields.',
-        'malformed-response',
-      );
-    }
-    return parsed.data.upload;
+    return routes.getDocumentUploadStatus(this.ctx, partnerUserRef, uploadId);
   }
 
   /** Reads the status of a plan you created, by your own `planReferenceId`.
@@ -210,26 +107,39 @@ export class PartnerApiClient {
    *  plan exists for the reference. A 403 `plan_forbidden` means the plan is
    *  assigned to another user. Neither is worth retrying. Poll on an interval
    *  rather than once, as there is no callback. */
-  async getPlanStatus(
+  getPlanStatus(
     partnerUserRef: string,
     planReferenceId: string,
   ): Promise<PlanStatusResult> {
-    const response = await this.callAsDelegate(partnerUserRef, token =>
-      this.fetchPlanStatus(token, planReferenceId),
-    );
-    if (!response.ok) {
-      throw await errorFromResponse(response, 'Get plan status');
-    }
+    return routes.getPlanStatus(this.ctx, partnerUserRef, planReferenceId);
+  }
 
-    const body = await parseJsonBody(response, 'Get plan status');
-    const parsed = planStatusResponseSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new PartnerApiError(
-        'Plan status response was missing required fields.',
-        'malformed-response',
-      );
-    }
-    return parsed.data.plan;
+  /** Reads the plan as JSON, for import into the CMS. Idempotent: always the
+   *  current content, never cached. A 409 `plan_not_ready` means the plan is
+   *  not `in_progress` or `ready_to_import`; poll `getPlanStatus` first. At
+   *  `in_progress` the plan is a draft and can still change in VITA, so
+   *  compare `plan.contentRevision` to know whether your copy is stale.
+   *  A 404 `not_found` or 403 `plan_forbidden` is as for `getPlanStatus`.
+   *  Nothing here is worth retrying except a `network` failure.
+   *
+   *  Shape, in brief (`PlanContent` and its part types are exported):
+   *
+   *  ```
+   *  { schemaVersion, plan: { reference, status, contentRevision, ... },
+   *    sources: [{ documentName, originalFilename, tags, createdAt }],
+   *    details, historyAndViews, specialEducationalNeeds, health,
+   *    socialCare, adviceAndInformation }
+   *  ```
+   *
+   *  Values are `string | null` (null only when empty), or rich text as
+   *  `{ text, html }` with citations keyed to `sources` by `documentName`.
+   *  The full type reference, with an example payload, is "Reading a plan's
+   *  content" in this package's README.md. */
+  getPlanContent(
+    partnerUserRef: string,
+    planReferenceId: string,
+  ): Promise<PlanContent> {
+    return routes.getPlanContent(this.ctx, partnerUserRef, planReferenceId);
   }
 
   /** Requests permission to attach a document, then immediately PUTs `body`
@@ -242,155 +152,18 @@ export class PartnerApiClient {
    *  is a plain `PartnerApiError` without a `code` -- there is no VITA error
    *  body to parse. `expiresAt` on the returned grant is worth checking
    *  before a slow upload: after it, the same URL will 403. */
-  async uploadDocument(
+  uploadDocument(
     partnerUserRef: string,
     planReferenceId: string,
     request: RequestDocumentUploadRequest,
     body: BodyInit,
   ): Promise<RequestedDocumentUpload> {
-    const upload = await this.requestDocumentUpload(
+    return routes.uploadDocument(
+      this.ctx,
       partnerUserRef,
       planReferenceId,
       request,
+      body,
     );
-
-    let response: Response;
-    try {
-      response = await this.fetchImpl(upload.url, {
-        method: 'PUT',
-        headers: upload.headers,
-        body,
-      });
-    } catch {
-      throw new PartnerApiError('Document upload failed.', 'network');
-    }
-    if (!response.ok) {
-      throw new PartnerApiError(
-        `Document upload was rejected with status ${response.status}.`,
-        'http',
-        response.status,
-      );
-    }
-
-    return upload;
-  }
-
-  /** Mints the delegated token for `partnerUserRef` and calls `send` with
-   *  it, retrying once with a fresh delegated token on a 401 -- shared by
-   *  every route that acts as a delegate rather than as the actor itself. */
-  private async callAsDelegate(
-    partnerUserRef: string,
-    send: (delegatedToken: string) => Promise<Response>,
-  ): Promise<Response> {
-    const delegated = await this.getDelegatedToken(partnerUserRef);
-    const response = await send(delegated.accessToken);
-    if (response.status !== 401) {
-      return response;
-    }
-    this.actorTokens.invalidate();
-    const refreshed = await this.getDelegatedToken(partnerUserRef);
-    return send(refreshed.accessToken);
-  }
-
-  private async exchange(
-    actorToken: string,
-    partnerUserRef: string,
-  ): Promise<Response> {
-    try {
-      return await this.fetchImpl(`${this.config.apiUrl}/token`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Authorization: `Bearer ${actorToken}`,
-        },
-        body: new URLSearchParams({
-          grant_type: TOKEN_EXCHANGE_GRANT_TYPE,
-          subject_token: partnerUserRef,
-          subject_token_type: PARTNER_USER_REFERENCE_TOKEN_TYPE,
-        }),
-      });
-    } catch {
-      throw new PartnerApiError('Delegated token exchange failed.', 'network');
-    }
-  }
-
-  private async fetchMe(delegatedToken: string): Promise<Response> {
-    try {
-      return await this.fetchImpl(`${this.config.apiUrl}/me`, {
-        headers: { Authorization: `Bearer ${delegatedToken}` },
-      });
-    } catch {
-      throw new PartnerApiError('Me request failed.', 'network');
-    }
-  }
-
-  private async postPlan(
-    delegatedToken: string,
-    plan: CreatePlanRequest,
-  ): Promise<Response> {
-    try {
-      return await this.fetchImpl(`${this.config.apiUrl}/plans`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${delegatedToken}`,
-        },
-        body: JSON.stringify(plan),
-      });
-    } catch {
-      throw new PartnerApiError('Create plan request failed.', 'network');
-    }
-  }
-
-  private async postDocumentUploadRequest(
-    delegatedToken: string,
-    planReferenceId: string,
-    request: RequestDocumentUploadRequest,
-  ): Promise<Response> {
-    try {
-      return await this.fetchImpl(
-        `${this.config.apiUrl}/plans/${encodeURIComponent(planReferenceId)}/documents`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${delegatedToken}`,
-          },
-          body: JSON.stringify(request),
-        },
-      );
-    } catch {
-      throw new PartnerApiError('Request document upload failed.', 'network');
-    }
-  }
-
-  private async fetchPlanStatus(
-    delegatedToken: string,
-    planReferenceId: string,
-  ): Promise<Response> {
-    try {
-      return await this.fetchImpl(
-        `${this.config.apiUrl}/plans/${encodeURIComponent(planReferenceId)}`,
-        { headers: { Authorization: `Bearer ${delegatedToken}` } },
-      );
-    } catch {
-      throw new PartnerApiError('Get plan status failed.', 'network');
-    }
-  }
-
-  private async fetchDocumentUploadStatus(
-    delegatedToken: string,
-    uploadId: string,
-  ): Promise<Response> {
-    try {
-      return await this.fetchImpl(`${this.config.apiUrl}/uploads/${uploadId}`, {
-        headers: { Authorization: `Bearer ${delegatedToken}` },
-      });
-    } catch {
-      throw new PartnerApiError(
-        'Get document upload status failed.',
-        'network',
-      );
-    }
   }
 }
